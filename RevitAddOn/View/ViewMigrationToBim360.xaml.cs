@@ -189,28 +189,75 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
         /// 
         /// 
         /// </summary>
-        public void GenerateTokenCallback( )
+        public void GenerateTokenCallback()
         {
-            if (ThreeLeggedToken.TokenInitialized)
+            if (!this.Dispatcher.CheckAccess())
             {
-                // change the button
-                btnSignIn.Visibility = Visibility.Hidden;
-                btnSignout.Visibility = Visibility.Visible;
-                PrepareUserData();
+                this.Dispatcher.BeginInvoke(new Action(() => GenerateTokenCallback()));
+                return;
             }
-            else
+
+            try
             {
-                btnSignIn.Visibility = Visibility.Visible;
-                btnSignout.Visibility = Visibility.Hidden;
+                if (ThreeLeggedToken.TokenInitialized)
+                {
+                    btnSignIn.Visibility = Visibility.Hidden;
+                    btnSignout.Visibility = Visibility.Visible;
+
+                    PrepareUserDataAsync();
+                }
+                else
+                {
+                    btnSignIn.Visibility = Visibility.Visible;
+                    btnSignout.Visibility = Visibility.Hidden;
+
+                    MessageBox.Show("Authentication failed. Please try again.", "Authentication",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during authentication: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
+        private async void PrepareUserDataAsync()
+        {
+            try
+            {
+                btnSignout.IsEnabled = false;
 
+                await PrepareUserData();
+
+                btnSignout.IsEnabled = true;
+
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error preparing user data: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+
+                btnSignIn.Visibility = Visibility.Visible;
+                btnSignout.Visibility = Visibility.Hidden;
+                btnSignout.IsEnabled = true;
+            }
+        }
 
         private void OnBtnLogin_Click(object sender, RoutedEventArgs e)
         {
             ThreeLeggedToken.TokenData tokenData = new ThreeLeggedToken.TokenData();
-            tokenData.callback = new ThreeLeggedToken.NewBearerDelegate(GenerateTokenCallback);
+
+            // Pass the control's dispatcher with the callback
+            tokenData.callback = new ThreeLeggedToken.NewBearerDelegate(() =>
+            {
+                // Use 'this' to refer to the UserControl
+                this.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    GenerateTokenCallback();
+                }));
+            });
+
             tokenData.control = this;
 
             ThreeLeggedToken.GenerateToken(tokenData);
@@ -249,14 +296,60 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
         }
 
 
-        private async void PrepareUserData( )
+        private async Task PrepareUserData()
         {
-            // show user name
-            User user = await User.GetUserProfileAsync();
-            btnSignout.Content = string.Format("User: {0} {1}", user.FirstName, user.LastName);
+            try
+            {
+                User user = await User.GetUserProfileAsync();
 
-            refreshTreeViewControl(treeDataManagement, true);
-            refreshTreeViewControl(treeDataManagementOutput, false);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    btnSignout.Content = $"User: {user.FirstName} {user.LastName}";
+                });
+
+                await Task.WhenAll(
+                    RefreshTreeViewControlAsync(treeDataManagement, true),
+                    RefreshTreeViewControlAsync(treeDataManagementOutput, false)
+                );
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error in PrepareUserData: {ex}");
+                throw; 
+            }
+        }
+
+        private async Task RefreshTreeViewControlAsync(System.Windows.Controls.TreeView control, bool isBimTeam)
+        {
+            await Dispatcher.InvokeAsync(() =>
+            {
+                control.Items.Clear();
+            });
+
+            dynamic hubs = await DataManagement.GetHubsAsync();
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                TreeViewItem rootItem = new TreeViewItem();
+                rootItem.Header = isBimTeam ? "BIM 360 Team" : "BIM 360 Docs";
+                control.Items.Add(rootItem);
+
+                foreach (var hub in hubs)
+                {
+                    if (isBimTeam && hub.Type == "bim360hubs")
+                        continue;
+
+                    if (!isBimTeam && hub.Type != "bim360hubs")
+                        continue;
+
+                    TreeViewItem hubItem = new TreeViewItem();
+                    hubItem.Header = hub.Text;
+                    hubItem.Tag = hub.ID;
+                    rootItem.Items.Add(hubItem);
+
+                    addTreeViewItems(hubItem);
+                }
+            });
         }
 
 
@@ -294,9 +387,9 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
         /// </summary>
         /// <param name="rootItem"></param>
         /// <returns></returns>
-        private async void addTreeViewItems( TreeViewItem rootItem)
+        private async void addTreeViewItems(TreeViewItem rootItem)
         {
-            if (rootItem == null )
+            if (rootItem == null)
                 return;
 
             string[] parameters = rootItem.Tag.ToString().Split('/');
@@ -311,40 +404,55 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
                     {
                         projects = await DataManagement.GetProjectsAsync(resourceId);
                     }
-                    catch( Exception e)
+                    catch (Exception e)
                     {
                         Console.WriteLine(e);
                         break;
                     }
-                    foreach(var project in projects )
+
+                    // Ensure UI updates happen on the UI thread
+                    await Dispatcher.InvokeAsync(() =>
                     {
-                        TreeViewItem projectItem = new TreeViewItem();
-                        projectItem.Tag = project.ID;
-                        projectItem.Header = project.Text;
-                        rootItem.Items.Add(projectItem);
-                        addTreeViewItems(projectItem);
-                    }
+                        foreach (var project in projects)
+                        {
+                            TreeViewItem projectItem = new TreeViewItem();
+                            projectItem.Tag = project.ID;
+                            projectItem.Header = project.Text;
+                            rootItem.Items.Add(projectItem);
+
+                            // Recursively add child items
+                            addTreeViewItems(projectItem);
+                        }
+                    });
                     break;
+
                 case "projects":
                     string hubId = parameters[parameters.Length - 3];
                     IList<DataManagement.Item> folders = null;
                     try
                     {
                         folders = await DataManagement.GetTopFoldersAsync(hubId, resourceId);
-                    } // User has admin permission but don't have Docs permision will fail here.
-                    catch( Exception e) 
+                    }
+                    catch (Exception e)
                     {
                         Console.Write(e);
                         break;
                     }
-                    foreach ( var folder in folders)
+
+                    // Ensure UI updates happen on the UI thread
+                    await Dispatcher.InvokeAsync(() =>
                     {
-                        TreeViewItem folderItem = new TreeViewItem();
-                        folderItem.Tag = folder.ID;
-                        folderItem.Header = folder.Text;
-                        rootItem.Items.Add(folderItem);
-                        addTreeViewItems(folderItem);
-                    }
+                        foreach (var folder in folders)
+                        {
+                            TreeViewItem folderItem = new TreeViewItem();
+                            folderItem.Tag = folder.ID;
+                            folderItem.Header = folder.Text;
+                            rootItem.Items.Add(folderItem);
+
+                            // Recursively add child items
+                            addTreeViewItems(folderItem);
+                        }
+                    });
                     break;
 
                 case "folders":
@@ -359,24 +467,71 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
                         Console.Write(e);
                         break;
                     }
-                    foreach ( var content in contents)
-                    {
-                        if (content.Type != "folders")
-                            continue;
 
-                        TreeViewItem contentItem = new TreeViewItem();
-                        contentItem.Tag = content.ID;
-                        contentItem.Header = content.Text;
-                        rootItem.Items.Add(contentItem);
-                        addTreeViewItems(contentItem);
-                    }
+                    // Process contents on UI thread
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        foreach (var content in contents)
+                        {
+                            if (content.Type == "folders")
+                            {
+                                TreeViewItem folderItem = new TreeViewItem();
+                                folderItem.Tag = content.ID;
+                                folderItem.Header = content.Text;
+                                rootItem.Items.Add(folderItem);
+
+                                // Recursively add child items
+                                addTreeViewItems(folderItem);
+                            }
+                        }
+                    });
+
+                    // Handle files separately to avoid blocking UI while checking worksharing
+                    ProcessFilesAsync(rootItem, contents, projectId);
                     break;
             }
-            return;
         }
 
+        private async void ProcessFilesAsync(TreeViewItem parentItem, IList<DataManagement.Item> contents, string projectId)
+        {
+            foreach (var content in contents)
+            {
+                if (content.Type == "items" && content.Text.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        string itemId = GetResourceId(content.ID);
+                        bool isWorkshared = await DataManagement.IsRevitModelWorksharedAsync(projectId, itemId);
 
-       
+                        if (isWorkshared)
+                        {
+                            // Update UI on the UI thread
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                TreeViewItem fileItem = new TreeViewItem();
+                                fileItem.Tag = content.ID;
+                                fileItem.Header = content.Text + " (Workshared)";
+                                fileItem.ToolTip = "Workshared central model";
+                                parentItem.Items.Add(fileItem);
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Error checking worksharing for {content.Text}: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private string GetResourceId(string fullPath)
+        {
+            // The full path is in the format: /api/.../.../resourceId
+            // We need to extract the last segment
+            string[] segments = fullPath.Split('/');
+            return segments[segments.Length - 1];
+        }
+
         /// <summary>
         /// 
         /// </summary>

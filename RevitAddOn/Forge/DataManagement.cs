@@ -195,7 +195,6 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.APS
                 string ext = Path.GetExtension(displayNmae);
                 string result = displayNmae.Replace(ext, "");
                 string zipped = item.included[0].attributes.extension.type;
-                // change the extension to .zip if the file is actually a composite design revit model
                 string downloadExt = zipped == "versions:autodesk.a360:CompositeDesign" ? ".zip" : ext;
                 displayNmae = result + downloadExt;
 
@@ -209,7 +208,6 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.APS
                 return;
             }
 
-            // get the storage of the item
             string storageUrl = string.Empty;
             foreach (KeyValuePair<string, dynamic> version in new DynamicDictionaryItems(item.included))
             {
@@ -270,6 +268,56 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.APS
                 }
             }
             return;
+        }
+
+        public static async Task<bool> IsRevitModelWorksharedAsync(string projectId, string itemId)
+        {
+            try
+            {
+                string userAccessToken = ThreeLeggedToken.GetToken();
+                ItemsApi itemsApi = new ItemsApi();
+                itemsApi.Configuration.AccessToken = userAccessToken;
+
+                var item = await itemsApi.GetItemAsync(projectId, itemId);
+
+                string displayName = item.data.attributes.displayName;
+                if (!displayName.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                if (item.included != null)
+                {
+                    foreach (var included in item.included)
+                    {
+                        if (included.type == "versions")
+                        {
+                            var extension = included.attributes?.extension;
+                            if (extension != null)
+                            {
+                                string extensionType = extension.type?.ToString();
+                                if (extensionType == "versions:autodesk.bim360:C4RModel" ||
+                                    extensionType == "versions:autodesk.core:C4RModel")
+                                {
+                                    return true;
+                                }
+                                var data = extension.data;
+                                if (data != null && data.worksharingEnabled == true)
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking worksharing status: {ex.Message}");
+                return false;
+            }
         }
     }
 }

@@ -46,7 +46,7 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.Migration
       /// </summary>
       public const string FModelsGuid = "modelsguid.json";
 
-      /// <summary>
+      /// <summary>A
       ///    File name to store linked models' info
       /// </summary>
       public const string FLinksInfo = "linkinfo.json";

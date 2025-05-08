@@ -95,12 +95,15 @@
     <Compile Include="Coroutine\Coroutine.cs" />
     <Compile Include="Coroutine\CoroutineScheduler.cs" />
     <Compile Include="Forge\DataManagement.cs" />
+    <Compile Include="Forge\TwoLeggedToken.cs" />
     <Compile Include="Forge\User.cs" />
     <Compile Include="Samples\Migration\IMigrationModel.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SampleContext.cs" />
     <Compile Include="SampleEngine.cs" />
+    <Compile Include="Samples\Migration\MigrationManager.cs" />
     <Compile Include="Samples\Migration\MigrationToBim360.cs" />
+    <Compile Include="Samples\Migration\RevitFileProcessor.cs" />
     <Compile Include="Samples\Migration\UIMigrationViewModel.cs" />
     <Compile Include="Forge\ThreeLeggedToken.cs" />
     <Compile Include="View\ViewSamplePortal.xaml.cs">
@@ -151,11 +154,11 @@
   -->
   <PropertyGroup>
     <PostBuildEvent>
-xcopy /Y /F "$(ProjectDir)CloudAPISample.addin" "$(AppData)\Autodesk\REVIT\Addins\2024"
+xcopy /Y /F "$(ProjectDir)CloudAPISample.addin" "$(AppData)\Autodesk\REVIT\Addins\2022"
 
-xcopy /Y /F "$(ProjectDir)\bin\Debug\*.dll" "$(AppData)\Autodesk\REVIT\Addins\2024"
+xcopy /Y /F "$(ProjectDir)\bin\Debug\*.dll" "$(AppData)\Autodesk\REVIT\Addins\2022"
 
-xcopy /Y /F "$(ProjectDir)Resources\icon.ico" "$(AppData)\Autodesk\REVIT\Addins\2024"
+xcopy /Y /F "$(ProjectDir)Resources\icon.ico" "$(AppData)\Autodesk\REVIT\Addins\2022"
 
 </PostBuildEvent>
   </PropertyGroup>
