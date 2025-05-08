@@ -184,90 +184,169 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.APS
         /// <param name="outputFolder"></param>
         public static async Task DownloadFile(string projectId, string itemId, string outputFolder)
         {
-            string userAccessToken = ThreeLeggedToken.GetToken();
-            ItemsApi itemsApi = new ItemsApi();
-            itemsApi.Configuration.AccessToken = userAccessToken;
-            var item = await itemsApi.GetItemAsync(projectId, itemId);
-            string displayNmae = string.Empty;
+            // Declare variables at the method level so they're accessible throughout
+            dynamic item = null;
+            string displayName = "unknown";
+
             try
             {
-                displayNmae = item.data.attributes.displayName;
-                string ext = Path.GetExtension(displayNmae);
-                string result = displayNmae.Replace(ext, "");
-                string zipped = item.included[0].attributes.extension.type;
-                string downloadExt = zipped == "versions:autodesk.a360:CompositeDesign" ? ".zip" : ext;
-                displayNmae = result + downloadExt;
+                string userAccessToken = ThreeLeggedToken.GetToken();
+                ItemsApi itemsApi = new ItemsApi();
+                itemsApi.Configuration.AccessToken = userAccessToken;
 
-            }
-            catch (Exception )
-            {
-                displayNmae = "no_name";
-            }
-            if (File.Exists(Path.Combine(outputFolder, displayNmae)))
-            {
-                return;
-            }
+                // Get item details - now 'item' is accessible throughout the method
+                item = await itemsApi.GetItemAsync(projectId, itemId);
 
-            string storageUrl = string.Empty;
-            foreach (KeyValuePair<string, dynamic> version in new DynamicDictionaryItems(item.included))
-            {
-                try
+                // Extract file name with proper null checking
+                displayName = item?.data?.attributes?.displayName ?? "unknown_file";
+
+                if (string.IsNullOrEmpty(displayName) || displayName == "unknown_file")
                 {
-                    storageUrl = (string)version.Value.relationships.storage.meta.link.href;
+                    throw new Exception("Cannot get display name from item");
                 }
-                catch (Exception )
+
+                // Check if file already exists
+                string outputPath = Path.Combine(outputFolder, displayName);
+                if (File.Exists(outputPath))
                 {
-                    storageUrl = string.Empty;
+                    Console.WriteLine($"File already exists: {displayName}");
                     return;
                 }
-            }
 
-            string[] parameters = storageUrl.Split('/');
-            string bucketKey = parameters[parameters.Length - 3];
-            string objectNameFull = parameters[parameters.Length - 1];
-            string objectName = objectNameFull.Split('?')[0];
+                // Get storage location
+                string storageUrl = null;
 
-            var objectApi = new ObjectsApi();
-            var objectDetails = objectApi.GetObjectDetails(bucketKey, objectName);
-            long size = objectDetails.size;
-
-            objectApi.Configuration.AccessToken = userAccessToken;
-            long rangeLower = 0;
-            long rangeStep = 314572800;
-            long rangeUpper = rangeStep;
-            while (size >= 0)
-            {
-                try
+                if (item?.included != null)
                 {
-                    Stream receiveStream = null;
-                    string range = $"bytes={rangeLower}-{rangeUpper}";
-                    receiveStream = objectApi.GetObject(bucketKey, objectName, range);
-                    size = size - rangeStep;
-                    rangeLower = rangeLower == 0 ? rangeLower + rangeStep + 1 : rangeLower + rangeStep;
-                    rangeUpper = rangeUpper + rangeStep;
-                    Directory.CreateDirectory(outputFolder);
-                    FileMode fileMode = File.Exists(Path.Combine(outputFolder, displayNmae)) ? FileMode.Append : FileMode.Create;
-                    FileStream fs = new FileStream(Path.Combine(outputFolder, displayNmae), fileMode, FileAccess.Write);
-                    Byte[] bytes = new Byte[100];
-                    int count = receiveStream.Read(bytes, 0, 100);
-                    while (count != 0)
+                    foreach (KeyValuePair<string, dynamic> version in new DynamicDictionaryItems(item.included))
                     {
-                        fs.Write(bytes, 0, count);
-                        count = receiveStream.Read(bytes, 0, 100);
+                        try
+                        {
+                            var storage = version.Value?.relationships?.storage;
+                            if (storage != null)
+                            {
+                                storageUrl = storage.meta?.link?.href?.ToString();
+                                if (!string.IsNullOrEmpty(storageUrl))
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error getting storage URL from version: {ex.Message}");
+                        }
                     }
-                    fs.Close();
-                    receiveStream.Close();
                 }
-                catch (Exception )
+
+                if (string.IsNullOrEmpty(storageUrl))
                 {
-                    string ext = Path.GetExtension(displayNmae);
-                    displayNmae = displayNmae.Replace(ext, ".txt");
-                    FileStream failed_fs = new FileStream(Path.Combine(outputFolder, displayNmae), FileMode.Create, FileAccess.Write);
-                    failed_fs.Close();
-                    return;
+                    throw new Exception($"Cannot get storage URL for file: {displayName}");
                 }
+
+                // Parse storage information
+                string[] parameters = storageUrl.Split('/');
+                if (parameters.Length < 3)
+                {
+                    throw new Exception($"Invalid storage URL format: {storageUrl}");
+                }
+
+                string bucketKey = parameters[parameters.Length - 3];
+                string objectNameWithQuery = parameters[parameters.Length - 1];
+                string objectName = objectNameWithQuery.Split('?')[0];
+
+                // Get object details
+                var objectApi = new ObjectsApi();
+                objectApi.Configuration.AccessToken = userAccessToken;
+
+                ObjectDetails objectDetails;
+                try
+                {
+                    objectDetails = objectApi.GetObjectDetails(bucketKey, objectName);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Cannot get object details for {objectName}: {ex.Message}");
+                }
+
+                // Handle the size conversion properly
+                long fileSize = 0;
+                if (objectDetails?.Size != null)
+                {
+                    // Explicit conversion from int? to long
+                    fileSize = Convert.ToInt64(objectDetails.Size);
+                }
+                else
+                {
+                    throw new Exception("Cannot determine file size");
+                }
+
+                Console.WriteLine($"Starting download of {displayName} ({fileSize} bytes)");
+
+                // Create output directory if it doesn't exist
+                Directory.CreateDirectory(outputFolder);
+
+                // Download the file in chunks
+                long chunkSize = 5 * 1024 * 1024; // 5MB chunks
+                long bytesDownloaded = 0;
+
+                using (var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
+                {
+                    while (bytesDownloaded < fileSize)
+                    {
+                        long rangeStart = bytesDownloaded;
+                        long rangeEnd = Math.Min(bytesDownloaded + chunkSize - 1, fileSize - 1);
+                        string range = $"bytes={rangeStart}-{rangeEnd}";
+
+                        try
+                        {
+                            using (var downloadStream = objectApi.GetObject(bucketKey, objectName, range))
+                            {
+                                // Use a buffer for better performance
+                                byte[] buffer = new byte[8192];
+                                int bytesRead;
+
+                                while ((bytesRead = downloadStream.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    fileStream.Write(buffer, 0, bytesRead);
+                                }
+                            }
+
+                            bytesDownloaded = rangeEnd + 1;
+
+                            // Report progress
+                            int percentComplete = (int)((bytesDownloaded * 100) / fileSize);
+                            Console.WriteLine($"Downloaded {percentComplete}% of {displayName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new Exception($"Error downloading chunk {range}: {ex.Message}");
+                        }
+                    }
+                }
+
+                Console.WriteLine($"Successfully downloaded: {displayName}");
             }
-            return;
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Download failed for {displayName}: {ex.Message}");
+
+                // Now we can safely use 'displayName' here because it's declared at the method level
+                string errorFileName = $"ERROR_{Path.GetFileNameWithoutExtension(displayName)}.txt";
+                string errorPath = Path.Combine(outputFolder, errorFileName);
+
+                // Create detailed error log
+                string errorContent = $"Download failed at {DateTime.Now}\n" +
+                                    $"Project ID: {projectId}\n" +
+                                    $"Item ID: {itemId}\n" +
+                                    $"File Name: {displayName}\n" +
+                                    $"Error: {ex.Message}\n" +
+                                    $"Stack trace: {ex.StackTrace}";
+
+                File.WriteAllText(errorPath, errorContent);
+
+                throw; // Re-throw the exception so the caller knows the download failed
+            }
         }
 
         public static async Task<bool> IsRevitModelWorksharedAsync(string projectId, string itemId)
