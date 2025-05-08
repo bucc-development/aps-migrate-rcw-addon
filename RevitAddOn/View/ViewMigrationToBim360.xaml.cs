@@ -307,15 +307,14 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
                     btnSignout.Content = $"User: {user.FirstName} {user.LastName}";
                 });
 
-                await Task.WhenAll(
-                    RefreshTreeViewControlAsync(treeDataManagement, true),
-                    RefreshTreeViewControlAsync(treeDataManagementOutput, false)
-                );
+                // Update both trees to show the same content
+                refreshTreeViewControl(treeDataManagement, true);      // Source tree
+                refreshTreeViewControl(treeDataManagementOutput, false); // Destination tree
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Error in PrepareUserData: {ex}");
-                throw; 
+                throw;
             }
         }
 
@@ -353,32 +352,30 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
         }
 
 
-        private async void refreshTreeViewControl(System.Windows.Controls.TreeView control, bool isBimTeam )
-        {            
+        private async void refreshTreeViewControl(System.Windows.Controls.TreeView control, bool isSourceTree)
+        {
             control.Items.Clear();
             TreeViewItem rootItem = new TreeViewItem();
-            rootItem.Header = isBimTeam? "BIM 360 Team" : "BIM 360 Docs";
+
+            // Clear labeling based on purpose
+            rootItem.Header = isSourceTree ? "Download From ACC" : "Upload To ACC";
             control.Items.Add(rootItem);
 
-            // show hubs tree
             dynamic hubs = await DataManagement.GetHubsAsync();
+
             foreach (var hub in hubs)
             {
-                if (isBimTeam && hub.Type == "bim360hubs")
-                    continue;
+                // Show all BIM 360/ACC hubs in both trees
+                if (hub.Type == "bim360hubs" || hub.Type == "hubs")
+                {
+                    TreeViewItem hubItem = new TreeViewItem();
+                    hubItem.Header = hub.Text;
+                    hubItem.Tag = hub.ID;
+                    rootItem.Items.Add(hubItem);
 
-                if (!isBimTeam && hub.Type != "bim360hubs")
-                    continue;
-
-                TreeViewItem hubItem = new TreeViewItem();
-                hubItem.Header = hub.Text;
-                hubItem.Tag = hub.ID;
-                rootItem.Items.Add(hubItem);
-
-                addTreeViewItems(hubItem );
+                    addTreeViewItems(hubItem);
+                }
             }
-            return;
-
         }
 
 
@@ -496,31 +493,59 @@ namespace Revit.SDK.Samples.CloudAPISample.CS.View
         {
             foreach (var content in contents)
             {
+                // Check if it's an item and has a .rvt extension
                 if (content.Type == "items" && content.Text.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase))
                 {
-                    try
+                    // Add the file to the tree immediately, regardless of worksharing status
+                    await Dispatcher.InvokeAsync(() =>
                     {
-                        string itemId = GetResourceId(content.ID);
-                        bool isWorkshared = await DataManagement.IsRevitModelWorksharedAsync(projectId, itemId);
+                        TreeViewItem fileItem = new TreeViewItem();
+                        fileItem.Tag = content.ID;
+                        fileItem.Header = content.Text; // Start with just the filename
+                        fileItem.ToolTip = "Revit file";
+                        parentItem.Items.Add(fileItem);
 
-                        if (isWorkshared)
-                        {
-                            // Update UI on the UI thread
-                            await Dispatcher.InvokeAsync(() =>
-                            {
-                                TreeViewItem fileItem = new TreeViewItem();
-                                fileItem.Tag = content.ID;
-                                fileItem.Header = content.Text + " (Workshared)";
-                                fileItem.ToolTip = "Workshared central model";
-                                parentItem.Items.Add(fileItem);
-                            });
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"Error checking worksharing for {content.Text}: {ex.Message}");
-                    }
+                        // Check worksharing status asynchronously
+                        CheckWorksharing(fileItem, content, projectId);
+                    });
                 }
+            }
+        }
+
+        private async void CheckWorksharing(TreeViewItem fileItem, DataManagement.Item content, string projectId)
+        {
+            try
+            {
+                string itemId = GetResourceId(content.ID);
+                bool isWorkshared = await DataManagement.IsRevitModelWorksharedAsync(projectId, itemId);
+
+                // Update the display based on worksharing status
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (isWorkshared)
+                    {
+                        fileItem.Header = content.Text + " (Workshared)";
+                        fileItem.ToolTip = "Workshared central model (C4R)";
+                        fileItem.FontWeight = System.Windows.FontWeights.Bold;
+                    }
+                    else
+                    {
+                        fileItem.Header = content.Text + " (Local)";
+                        fileItem.ToolTip = "Local Revit file";
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error checking worksharing for {content.Text}: {ex.Message}");
+
+                // Still show the file even if we can't determine its worksharing status
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    fileItem.Header = content.Text;
+                    fileItem.ToolTip = "Revit file (status unknown)";
+                    fileItem.FontStyle = System.Windows.FontStyles.Italic;
+                });
             }
         }
 
